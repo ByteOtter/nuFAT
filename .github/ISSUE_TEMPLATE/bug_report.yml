@@ -1,0 +1,46 @@
+# SPDX-FileCopyrightText: Christopher Hock <byteotter@gmail.com>
+# SPDX-License-Identifier: MIT
+---
+name: Bug Report
+description: Found a bug? Let us know!
+title: "[BUG]"
+labels: ["bug", "pending"]
+body:
+  - type: markdown
+    attributes:
+      value: >
+        **NOTE**: Please only use this form to report _reproducible bugs_ in nuFAT.
+  - type: input
+    attributes:
+      label: uFAT Version
+      description: >
+        Which version of nuFAT does this bug affect?
+      placeholder: master
+    validations:
+      required: true
+  - type: input
+    attributes:
+      label: Fuse Version
+      description: >
+        Which version of fuse are you running?
+      placeholder: v3
+  - type: textarea
+    attributes:
+      label: Bug Description
+      description: >
+        Please describe in detail what issue you face.
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Expected Behaviour
+      description: >
+        Please describe what you exepected to happen.
+  - type: textarea
+    attributes:
+      label: Steps to Reproduce
+      description: >
+        Please describe what steps we need to take to reproduce this issue.
+        Please also include any relevant details about your environment.
+    validations:
+      required: true
