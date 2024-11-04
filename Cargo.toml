@@ -4,4 +4,6 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+fatfs = "0.3.6"
 fuse = "0.3.1"
+libc = "0.2.161"
