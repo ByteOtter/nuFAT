@@ -1,6 +1,8 @@
 //! This module implements the FUSE-API to access the FAT filesystem provided by the `fatfs` crate.
 use fatfs::{FileSystem as FatfsFileSystem, FsOptions};
-use fuser::{FileAttr, FileType, Filesystem as FuseFilesystem, ReplyAttr, ReplyData, ReplyDirectory, Request};
+use fuser::{
+    FileAttr, FileType, Filesystem as FuseFilesystem, ReplyAttr, ReplyData, ReplyDirectory, Request,
+};
 use libc::ENOENT;
 use std::fs::File;
 use std::path::Path;
@@ -95,7 +97,14 @@ impl FuseFilesystem for FatFilesystem {
     /// # Returns
     ///
     /// This function does not return a value. It responds to the request with directory entries or an error code.
-    fn readdir(&mut self, _req: &Request, ino: u64, _fh: u64, _offset: i64, mut reply: ReplyDirectory) {
+    fn readdir(
+        &mut self,
+        _req: &Request,
+        ino: u64,
+        _fh: u64,
+        _offset: i64,
+        mut reply: ReplyDirectory,
+    ) {
         if ino != 1 {
             // If not root-Directory, return ENOENT
             reply.error(ENOENT);
@@ -111,11 +120,12 @@ impl FuseFilesystem for FatFilesystem {
         for entry in root_dir.iter().filter_map(Result::ok) {
             let name = entry.file_name(); // Get the file name
                                           // Use a simple incrementing number as inode
-            reply.add(entry_index, 0, fuser::FileType::RegularFile, &name); // Add the entry to the reply
+            let _ = reply.add(entry_index, 0, fuser::FileType::RegularFile, &name); // Add the entry to the reply
             entry_index += 1; // Increment the index for the next entry
         }
         reply.ok();
     }
+
     /// Read data from a file (not yet implemented).
     ///
     /// # Parameters
@@ -126,8 +136,8 @@ impl FuseFilesystem for FatFilesystem {
     /// * `_fh: u64` - File handle (not used in this implementation).
     /// * `offset: i64` - Offset in the file where reading starts.
     /// * `size: u32` - Number of bytes to read.
-	/// * `flags: i32`
-	/// * `lock_owner: Option<u64>`
+    /// * `flags: i32`
+    /// * `lock_owner: Option<u64>`
     /// * `reply: ReplyData` - A `fuse::ReplyData` instance for returning file data.
     ///
     /// # Returns
@@ -141,9 +151,9 @@ impl FuseFilesystem for FatFilesystem {
         _fh: u64,
         offset: i64,
         size: u32,
-		flags: i32,
-		lock_owner: Option<u64>,
-		reply: ReplyData,
+        flags: i32,
+        lock_owner: Option<u64>,
+        reply: ReplyData,
     ) {
         todo!("File read not yet implemented!")
     }
