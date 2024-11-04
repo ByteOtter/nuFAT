@@ -16,5 +16,8 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v2
 
+      - name: Install Dependencies
+        run: sudo apt-get install -y fuse3 libfuse3-dev
+
       - name: Run Cargo Test
         run: cargo test --verbose

@@ -16,6 +16,9 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v2
 
+      - name: Install libfuse
+        run: sudo apt-get install -y fuse3 libfuse3-dev
+
       - name: Run cargo fmt
         run: cargo fmt -- --check
 
