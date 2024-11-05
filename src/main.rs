@@ -1,4 +1,4 @@
-use fuser::mount;
+use fuser::mount2;
 use std::env;
 use std::path::Path;
 
@@ -17,7 +17,7 @@ fn main() {
     let disk_image_path = Path::new(&args[1]);
     let mount_point = Path::new(&args[2]);
 
-    if let Err(e) = mount(FatFilesystem::new(disk_image_path), &mount_point, &[]) {
+    if let Err(e) = mount2(FatFilesystem::new(disk_image_path), &mount_point, &[]) {
         eprintln!("Failed to mount filesystem: {}", e);
     }
 }
