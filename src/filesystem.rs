@@ -4,18 +4,24 @@ use fuser::{
     FileAttr, FileType, Filesystem as FuseFilesystem, ReplyAttr, ReplyData, ReplyDirectory, Request,
 };
 use libc::ENOENT;
+use std::collections::HashMap;
 use std::fs::File;
-use std::path::Path;
+use std::io::Read;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// Represent FAT-Filesystem
 ///
 /// # Members
 ///
 /// * `fs: Arc<Mutex<fatfs::Filesystem<File>>>`
+/// * `inode_map: Mutex<HashMap<u64, PathBuf>>` - The map of all child nodes.
+/// * `nnode: Mutex<u64>` - The ID of the next inode.
 pub struct FatFilesystem {
     fs: Arc<Mutex<FatfsFileSystem<File>>>,
+    inode_map: Mutex<HashMap<u64, PathBuf>>,
+    nnode: Mutex<u64>,
 }
 
 impl FatFilesystem {
@@ -32,8 +38,43 @@ impl FatFilesystem {
         let img_file = File::open(disk_image_path).expect("Failed to open disk image.");
         let fs = FatfsFileSystem::new(img_file, FsOptions::new())
             .expect("Failed to create new FileSystem.");
+
+        let mut inode_map = HashMap::new();
+        inode_map.insert(1, PathBuf::from("/"));
+
         FatFilesystem {
             fs: Arc::new(Mutex::new(fs)),
+            inode_map: Mutex::new(inode_map),
+            nnode: Mutex::new(2),
+        }
+    }
+
+    /// Helper function to get or create an inode for a given path.
+    /// Needed as `fatfs` does not support inode natively.
+    ///
+    /// # Parameters
+    ///
+    /// * `path: &Path` - The Path to return the inode of or create one for.
+    ///
+    /// # Returns
+    ///
+    /// * `u64` - The id of the node.
+    fn get_or_create_inode(&self, path: &Path) -> u64 {
+        let mut inode_map = self.inode_map.lock().unwrap();
+        let mut nnode = self.nnode.lock().unwrap();
+
+        // If given path has an Inode, return it.
+        if let Some(&ino) = inode_map
+            .iter()
+            .find_map(|(ino, p)| if p == path { Some(ino) } else { None })
+        {
+            ino
+        } else {
+            // Create a new Inode and add them to the mapping.
+            let ino = *nnode;
+            inode_map.insert(ino, path.to_path_buf());
+            *nnode += 1;
+            ino
         }
     }
 }
@@ -44,7 +85,8 @@ impl FuseFilesystem for FatFilesystem {
     /// # Parameters
     ///
     /// * `_req: &Request` - The `fuser::Request` datastructure representing the request to the filesystem.
-    /// * `ino: u64` - The inode number of the requested file or directory.
+    /// * `ino: u64` - The inode-number of the given filesystem object.
+    /// * `_fh: Option<u64>` - The File-Handle (optional).
     /// * `reply: ReplyAttr` - A `fuser::ReplyAttr` instance for returning attributes.
     ///
     /// # Returns
@@ -55,8 +97,21 @@ impl FuseFilesystem for FatFilesystem {
         // Attribute time to live
         let ttl = Duration::from_secs(1);
 
+        // Get path for given inode.
+        let path = {
+            let inode_map = self.inode_map.lock().unwrap();
+            inode_map.get(&ino).cloned()
+        };
+
+        let path = match path {
+            Some(path) => path,
+            None => {
+                reply.error(ENOENT);
+                return;
+            }
+        };
+
         if ino == 1 {
-            // If the current directory is root, return these attributes
             let now = SystemTime::now();
             reply.attr(
                 &ttl,
@@ -79,8 +134,35 @@ impl FuseFilesystem for FatFilesystem {
                 },
             );
         } else {
-            // If the file does not exist, return ENOENT
-            reply.error(ENOENT);
+            let fs = self.fs.lock().unwrap();
+            match fs.root_dir().open_file(path.to_str().unwrap()) {
+                Ok(file) => {
+                    // Beispiel für eine Datei
+                    let size = 0;
+                    let now = SystemTime::now();
+                    let file_attr = FileAttr {
+                        ino,
+                        size,
+                        blocks: (size / 512) + 1,
+						atime: now,
+                        mtime: now,
+                        ctime: now,
+                        crtime: now,
+                        kind: FileType::RegularFile,
+                        perm: 0o644,
+                        nlink: 1,
+                        uid: 501,
+                        gid: 20,
+                        rdev: 0,
+                        flags: 0,
+                        blksize: 4096,
+                    };
+                    reply.attr(&ttl, &file_attr);
+                }
+                Err(_) => {
+                    reply.error(libc::ENOENT);
+                }
+            };
         }
     }
 
@@ -89,9 +171,9 @@ impl FuseFilesystem for FatFilesystem {
     /// # Parameters
     ///
     /// * `_req: &Request` - The `fuser::Request` datastructure representing the request to the filesystem.
-    /// * `ino: u64` - The inode number of the requested directory.
-    /// * `_fh: u64` - File handle (not used in this example).
-    /// * `_offset: i64` - Offset for reading (not used in this example).
+    /// * `ino: u64` - The inode number of the requested file or directory.
+    /// * `_fh: u64` - The file handle, if given.
+    /// * `_offset: i64` - The offset of the entries.
     /// * `reply: ReplyDirectory` - A `fuser::ReplyDirectory` instance for returning directory contents.
     ///
     /// # Returns
@@ -105,24 +187,44 @@ impl FuseFilesystem for FatFilesystem {
         _offset: i64,
         mut reply: ReplyDirectory,
     ) {
-        if ino != 1 {
-            // If not root-Directory, return ENOENT
-            reply.error(ENOENT);
-            return;
-        }
-
-        // Lock access to filesystem
         let fs = self.fs.lock().unwrap();
-        let root_dir = fs.root_dir();
+        let inode_map = self.inode_map.lock().unwrap();
 
-        let mut entry_index: u64 = 2; // Start inode numbering from 2 (1 is reserved for the root)
+        // Get the path for the given inode, if it exists.
+        let path = match inode_map.get(&ino) {
+            Some(path) => path.clone(),
+            None => {
+                // Inode not found, return ENOENT.
+                reply.error(ENOENT);
+                return;
+            }
+        };
 
-        for entry in root_dir.iter().filter_map(Result::ok) {
-            let name = entry.file_name(); // Get the file name
-                                          // Use a simple incrementing number as inode
-            let _ = reply.add(entry_index, 0, fuser::FileType::RegularFile, &name); // Add the entry to the reply
-            entry_index += 1; // Increment the index for the next entry
+        // Open dir and read entries.
+        let dir = match fs.root_dir().open_dir(path.to_str().unwrap()) {
+            Ok(dir) => dir,
+            Err(_) => {
+                reply.error(ENOENT);
+                return;
+            }
+        };
+
+        // Iterate over all entries in the directory.
+        for entry in dir.iter().flatten() {
+            let file_name = entry.file_name();
+            let kind = if entry.is_dir() {
+                FileType::Directory
+            } else {
+                FileType::RegularFile
+            };
+
+            // Create an inode for every file
+            let entry_path = path.join(file_name.as_str());
+            let entry_inode = self.get_or_create_inode(&entry_path);
+
+            let _ = reply.add(entry_inode, 0, kind, file_name.as_str());
         }
+
         reply.ok();
     }
 
