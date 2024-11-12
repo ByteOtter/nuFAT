@@ -211,6 +211,7 @@ impl FuseFilesystem for FatFilesystem {
         _offset: i64,
         mut reply: ReplyDirectory,
     ) {
+		println!("Reading dir...");
         let fs = self.fs.lock().unwrap();
         let inode_map = self.inode_map.lock().unwrap();
 
@@ -235,6 +236,7 @@ impl FuseFilesystem for FatFilesystem {
 
         // Iterate over all entries in the directory.
         for entry in dir.iter().flatten() {
+			println!("Entry: {:?}", entry);
             let file_name = entry.file_name();
             let kind = if entry.is_dir() {
                 FileType::Directory
