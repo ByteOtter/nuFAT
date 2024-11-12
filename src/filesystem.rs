@@ -1,5 +1,5 @@
 //! This module implements the FUSE-API to access the FAT filesystem provided by the `fatfs` crate.
-use fatfs::{FileSystem as FatfsFileSystem, FsOptions};
+use fatfs::{Dir, FileSystem as FatfsFileSystem, FsOptions};
 use fuser::{
     FileAttr, FileType, Filesystem as FuseFilesystem, ReplyAttr, ReplyData, ReplyDirectory, Request,
 };
@@ -78,29 +78,29 @@ impl FatFilesystem {
         }
     }
 
-	/// Helper function to format the filesize correctly.
-	///
-	/// # Parameters
-	///
-	/// * `size: u64` - The size of the file.
-	///
-	/// # Returns
-	///
-	/// A format string including the size calculated into the correct unit.
-	fn format_file_size(size: u64) -> String {
-		const KB: u64 = 1024;
-		const MB: u64 = 1024 * KB;
-		const GB: u64 = 1024 * MB;
-		if size < KB {
-			format!("{}B", size)
-		} else if size < MB {
-			format!("{}KB", size / KB)
-		} else if size < GB {
-			format!("{}MB", size / MB)
-		} else {
-			format!("{}GB", size / GB)
-		}
-	}
+    /// Helper function to format the filesize correctly.
+    ///
+    /// # Parameters
+    ///
+    /// * `size: u64` - The size of the file.
+    ///
+    /// # Returns
+    ///
+    /// A format string including the size calculated into the correct unit.
+    fn format_file_size(size: u64) -> String {
+        const KB: u64 = 1024;
+        const MB: u64 = 1024 * KB;
+        const GB: u64 = 1024 * MB;
+        if size < KB {
+            format!("{}B", size)
+        } else if size < MB {
+            format!("{}KB", size / KB)
+        } else if size < GB {
+            format!("{}MB", size / MB)
+        } else {
+            format!("{}GB", size / GB)
+        }
+    }
 }
 
 impl FuseFilesystem for FatFilesystem {
@@ -168,7 +168,7 @@ impl FuseFilesystem for FatFilesystem {
                         ino,
                         size,
                         blocks: (size / 512) + 1,
-						atime: now,
+                        atime: now,
                         mtime: now,
                         ctime: now,
                         crtime: now,
@@ -211,32 +211,39 @@ impl FuseFilesystem for FatFilesystem {
         _offset: i64,
         mut reply: ReplyDirectory,
     ) {
-		println!("Reading dir...");
+        println!("Reading dir...");
         let fs = self.fs.lock().unwrap();
-        let inode_map = self.inode_map.lock().unwrap();
 
-        // Get the path for the given inode, if it exists.
-        let path = match inode_map.get(&ino) {
-            Some(path) => path.clone(),
-            None => {
-                // Inode not found, return ENOENT.
-                reply.error(ENOENT);
-                return;
+        let path = {
+            let inode_map = self.inode_map.lock().unwrap();
+            match inode_map.get(&ino).cloned() {
+                Some(path) => path,
+                None => {
+					eprintln!("Unable to get inode when initializing path!\nMap: {:?}", inode_map);
+                    reply.error(ENOENT);
+                    return;
+                }
             }
         };
-
+        let dir: Dir<'_, File>;
         // Open dir and read entries.
-        let dir = match fs.root_dir().open_dir(path.to_str().unwrap()) {
-            Ok(dir) => dir,
-            Err(_) => {
-                reply.error(ENOENT);
-                return;
-            }
-        };
+        if path == PathBuf::from("/") {
+			println!("Root directory detected:");
+            dir = fs.root_dir();
+        } else {
+            dir = match fs.root_dir().open_dir(path.to_str().unwrap()) {
+                Ok(dir) => dir,
+                Err(_) => {
+					eprintln!("Unable to open given dir! Path: {:?}", path.to_str().unwrap());
+                    reply.error(ENOENT);
+                    return;
+                }
+            };
+        }
 
         // Iterate over all entries in the directory.
         for entry in dir.iter().flatten() {
-			println!("Entry: {:?}", entry);
+            println!("Entry: {:?}", entry);
             let file_name = entry.file_name();
             let kind = if entry.is_dir() {
                 FileType::Directory
@@ -250,7 +257,7 @@ impl FuseFilesystem for FatFilesystem {
 
             let _ = reply.add(entry_inode, 0, kind, file_name.as_str());
         }
-
+		println!("reply: {:?}", reply);
         reply.ok();
     }
 
