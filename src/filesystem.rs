@@ -9,6 +9,9 @@ use std::{
     time::{Duration, SystemTime},
 };
 
+// TODO: Probably the wrong mtools command run. Read the mtools docs and find out wich ones are
+// applicable for each function.
+
 pub struct Fat32Fs {
     disk_img: String, // Path to the FAT32 disk image file
 }
@@ -23,7 +26,9 @@ impl Fat32Fs {
         let mut full_args = vec!["-i", &self.disk_img];
         full_args.extend_from_slice(args);
 
+		println!("Run command: mtools with args:  {:?}", &full_args);
         let output = Command::new("mtools").args(full_args).output();
+		println!("Output: {:?}", &output);
         match output {
             Ok(output) => {
                 if output.status.success() {
