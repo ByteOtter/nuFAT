@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 fatfs = "0.3.6"
+fscommon = "0.1.1"
 # fuse = "0.3.1" -- Deprecated (or outdated. Wait for v0.4 release)
 fuser = "0.15.0"
 libc = "0.2.161"

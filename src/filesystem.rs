@@ -118,6 +118,10 @@ impl FuseFilesystem for FatFilesystem {
     /// This function does not return a value. It responds to the request with a reply or an error
     /// code if the requested inode does not exist.
     fn getattr(&mut self, _req: &Request, ino: u64, _fh: Option<u64>, reply: ReplyAttr) {
+        println!(
+            "getattr args: req:{:?}, ino:{:?}, _fh:{:?}, reply:{:?}",
+            _req, ino, _fh, reply
+        );
         // Attribute time to live
         let ttl = Duration::from_secs(1);
 
@@ -203,61 +207,104 @@ impl FuseFilesystem for FatFilesystem {
     /// # Returns
     ///
     /// This function does not return a value. It responds to the request with directory entries or an error code.
+    // fn readdir(
+    //     &mut self,
+    //     _req: &Request,
+    //     ino: u64,
+    //     _fh: u64,
+    //     _offset: i64,
+    //     mut reply: ReplyDirectory,
+    // ) {
+    //     println!("Reading dir...");
+    //     println!(
+    //         "Readdir args: _req:{:?}, ino:{:?}, _fh:{:?}, _offset:{:?}, reply:{:?}",
+    //         _req, ino, _fh, _offset, reply
+    //     );
+    //     let fs = self.fs.lock().unwrap();
+
+    //     let path = {
+    //         let inode_map = self.inode_map.lock().unwrap();
+    //         match inode_map.get(&ino).cloned() {
+    //             Some(path) => path,
+    //             None => {
+    //                 eprintln!(
+    //                     "Unable to get inode when initializing path!\nMap: {:?}",
+    //                     inode_map
+    //                 );
+    //                 reply.error(ENOENT);
+    //                 return;
+    //             }
+    //         }
+    //     };
+    //     let dir: Dir<'_, File>;
+    //     // Open dir and read entries.
+    //     if path == PathBuf::from("/") {
+    //         println!("Root directory detected:");
+    //         dir = fs.root_dir();
+    //     } else {
+    //         dir = match fs.root_dir().open_dir(path.to_str().unwrap()) {
+    //             Ok(dir) => dir,
+    //             Err(_) => {
+    //                 eprintln!(
+    //                     "Unable to open given dir! Path: {:?}",
+    //                     path.to_str().unwrap()
+    //                 );
+    //                 reply.error(ENOENT);
+    //                 return;
+    //             }
+    //         };
+    //     }
+
+    //     // Iterate over all entries in the directory.
+    //     for entry in dir.iter().flatten() {
+    //         println!("Entry: {:?}", entry);
+    //         let file_name = entry.file_name();
+    //         let kind = if entry.is_dir() {
+    //             FileType::Directory
+    //         } else {
+    //             FileType::RegularFile
+    //         };
+
+    //         // Create an inode for every file
+    //         let entry_path = path.join(file_name.as_str());
+    //         let entry_inode = self.get_or_create_inode(&entry_path);
+
+    //         let _ = reply.add(entry_inode, 0, kind, file_name.as_str());
+    //     }
+    //     println!("reply: {:?}", reply);
+    //     reply.ok();
+    // }
+
     fn readdir(
         &mut self,
         _req: &Request,
         ino: u64,
         _fh: u64,
-        _offset: i64,
+        offset: i64,
         mut reply: ReplyDirectory,
     ) {
-        println!("Reading dir...");
-        let fs = self.fs.lock().unwrap();
+		// check if request on root dir
+        if ino != 1 {
+            reply.error(libc::ENOENT); // currently only support root dir requests
+            return;
+        }
 
-        let path = {
-            let inode_map = self.inode_map.lock().unwrap();
-            match inode_map.get(&ino).cloned() {
-                Some(path) => path,
-                None => {
-					eprintln!("Unable to get inode when initializing path!\nMap: {:?}", inode_map);
-                    reply.error(ENOENT);
-                    return;
-                }
+        // Use offset to iterate over entries
+        let entries = vec![
+            (1, fuser::FileType::Directory, "."),  // Current dir
+            (1, fuser::FileType::Directory, ".."), // Parent dir
+            (2, fuser::FileType::Directory, "test_dir"), // Hardcoded test directoy
+            (3, fuser::FileType::RegularFile, "test.txt"), // Hardcoded test text file
+        ];
+
+        // Reply with entries based on offset
+        for (i, entry) in entries.iter().enumerate().skip(offset as usize) {
+            let (ino, kind, name) = entry;
+            if reply.add(*ino, i as i64 + 1, *kind, name) {
+                break; // If full, abort
             }
-        };
-        let dir: Dir<'_, File>;
-        // Open dir and read entries.
-        if path == PathBuf::from("/") {
-			println!("Root directory detected:");
-            dir = fs.root_dir();
-        } else {
-            dir = match fs.root_dir().open_dir(path.to_str().unwrap()) {
-                Ok(dir) => dir,
-                Err(_) => {
-					eprintln!("Unable to open given dir! Path: {:?}", path.to_str().unwrap());
-                    reply.error(ENOENT);
-                    return;
-                }
-            };
         }
 
-        // Iterate over all entries in the directory.
-        for entry in dir.iter().flatten() {
-            println!("Entry: {:?}", entry);
-            let file_name = entry.file_name();
-            let kind = if entry.is_dir() {
-                FileType::Directory
-            } else {
-                FileType::RegularFile
-            };
-
-            // Create an inode for every file
-            let entry_path = path.join(file_name.as_str());
-            let entry_inode = self.get_or_create_inode(&entry_path);
-
-            let _ = reply.add(entry_inode, 0, kind, file_name.as_str());
-        }
-		println!("reply: {:?}", reply);
         reply.ok();
     }
 
