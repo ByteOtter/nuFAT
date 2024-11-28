@@ -1,290 +1,338 @@
-//! This module implements the FUSE-API to access the FAT filesystem provided by the `fatfs` crate.
-use fatfs::{FileSystem as FatfsFileSystem, FsOptions};
 use fuser::{
-    FileAttr, FileType, Filesystem as FuseFilesystem, ReplyAttr, ReplyData, ReplyDirectory, Request,
+    FileAttr, FileType, Filesystem, ReplyAttr, ReplyCreate, ReplyData, ReplyDirectory, ReplyEntry, ReplyWrite, Request
 };
-use libc::ENOENT;
-use std::collections::HashMap;
-use std::fs::File;
-use std::io::Read;
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use libc;
+use std::{
+    ffi::OsStr,
+    hash::{Hash, Hasher},
+    process::Command,
+    time::{Duration, SystemTime},
+};
 
-/// Represent FAT-Filesystem
-///
-/// # Members
-///
-/// * `fs: Arc<Mutex<fatfs::Filesystem<File>>>`
-/// * `inode_map: Mutex<HashMap<u64, PathBuf>>` - The map of all child nodes.
-/// * `nnode: Mutex<u64>` - The ID of the next inode.
-pub struct FatFilesystem {
-    fs: Arc<Mutex<FatfsFileSystem<File>>>,
-    inode_map: Mutex<HashMap<u64, PathBuf>>,
-    nnode: Mutex<u64>,
+pub struct Fat32Fs {
+    disk_img: String, // Path to the FAT32 disk image file
 }
 
-impl FatFilesystem {
-    /// Create a new instance of a FAT-Filesystem.
-    ///
-    /// # Parameters
-    ///
-    /// * `disk_image_path: &Path` - The path of the disk image to use.
-    ///
-    /// # Returns
-    ///
-    /// * `Self` - A new instance of a `FatFilesystem`.
-    pub fn new(disk_image_path: &Path) -> Self {
-        let img_file = File::open(disk_image_path).expect("Failed to open disk image.");
-        let fs = FatfsFileSystem::new(img_file, FsOptions::new())
-            .expect("Failed to create new FileSystem.");
-
-        let mut inode_map = HashMap::new();
-        inode_map.insert(1, PathBuf::from("/"));
-
-        FatFilesystem {
-            fs: Arc::new(Mutex::new(fs)),
-            inode_map: Mutex::new(inode_map),
-            nnode: Mutex::new(2),
-        }
+impl Fat32Fs {
+    pub fn new(disk_img: String) -> Self {
+        Self { disk_img }
     }
 
-    /// Helper function to get or create an inode for a given path.
-    /// Needed as `fatfs` does not support inode natively.
-    ///
-    /// # Parameters
-    ///
-    /// * `path: &Path` - The Path to return the inode of or create one for.
-    ///
-    /// # Returns
-    ///
-    /// * `u64` - The id of the node.
-    fn get_or_create_inode(&self, path: &Path) -> u64 {
-        let mut inode_map = self.inode_map.lock().unwrap();
-        let mut nnode = self.nnode.lock().unwrap();
+    /// Run an `mtools` command with the `-i` flag for `disk.img`
+    fn run_mtools_command(&self, args: &[&str]) -> Result<String, String> {
+        let mut full_args = vec!["-i", &self.disk_img];
+        full_args.extend_from_slice(args);
 
-        // If given path has an Inode, return it.
-        if let Some(&ino) = inode_map
-            .iter()
-            .find_map(|(ino, p)| if p == path { Some(ino) } else { None })
-        {
-            ino
-        } else {
-            // Create a new Inode and add them to the mapping.
-            let ino = *nnode;
-            inode_map.insert(ino, path.to_path_buf());
-            *nnode += 1;
-            ino
-        }
-    }
-
-	/// Helper function to format the filesize correctly.
-	///
-	/// # Parameters
-	///
-	/// * `size: u64` - The size of the file.
-	///
-	/// # Returns
-	///
-	/// A format string including the size calculated into the correct unit.
-	fn format_file_size(size: u64) -> String {
-		const KB: u64 = 1024;
-		const MB: u64 = 1024 * KB;
-		const GB: u64 = 1024 * MB;
-		if size < KB {
-			format!("{}B", size)
-		} else if size < MB {
-			format!("{}KB", size / KB)
-		} else if size < GB {
-			format!("{}MB", size / MB)
-		} else {
-			format!("{}GB", size / GB)
-		}
-	}
-}
-
-impl FuseFilesystem for FatFilesystem {
-    /// Get the attributes of a file or directory.
-    ///
-    /// # Parameters
-    ///
-    /// * `_req: &Request` - The `fuser::Request` datastructure representing the request to the filesystem.
-    /// * `ino: u64` - The inode-number of the given filesystem object.
-    /// * `_fh: Option<u64>` - The File-Handle (optional).
-    /// * `reply: ReplyAttr` - A `fuser::ReplyAttr` instance for returning attributes.
-    ///
-    /// # Returns
-    ///
-    /// This function does not return a value. It responds to the request with a reply or an error
-    /// code if the requested inode does not exist.
-    fn getattr(&mut self, _req: &Request, ino: u64, _fh: Option<u64>, reply: ReplyAttr) {
-        // Attribute time to live
-        let ttl = Duration::from_secs(1);
-
-        // Get path for given inode.
-        let path = {
-            let inode_map = self.inode_map.lock().unwrap();
-            inode_map.get(&ino).cloned()
-        };
-
-        let path = match path {
-            Some(path) => path,
-            None => {
-                reply.error(ENOENT);
-                return;
+        let output = Command::new("mtools").args(full_args).output();
+        match output {
+            Ok(output) => {
+                if output.status.success() {
+                    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+                } else {
+                    Err(String::from_utf8_lossy(&output.stderr).to_string())
+                }
             }
-        };
-
-        if ino == 1 {
-            let now = SystemTime::now();
-            reply.attr(
-                &ttl,
-                &FileAttr {
-                    ino: 1,
-                    size: 0,
-                    blocks: 0,
-                    atime: now,
-                    mtime: now,
-                    ctime: now,
-                    crtime: now,
-                    kind: FileType::Directory,
-                    perm: 0o755,
-                    nlink: 2,
-                    uid: 501,
-                    gid: 20,
-                    rdev: 0,
-                    flags: 0,
-                    blksize: 4096,
-                },
-            );
-        } else {
-            let fs = self.fs.lock().unwrap();
-            match fs.root_dir().open_file(path.to_str().unwrap()) {
-                Ok(file) => {
-                    // Beispiel für eine Datei
-                    let size = 0;
-                    let now = SystemTime::now();
-                    let file_attr = FileAttr {
-                        ino,
-                        size,
-                        blocks: (size / 512) + 1,
-						atime: now,
-                        mtime: now,
-                        ctime: now,
-                        crtime: now,
-                        kind: FileType::RegularFile,
-                        perm: 0o644,
-                        nlink: 1,
-                        uid: 501,
-                        gid: 20,
-                        rdev: 0,
-                        flags: 0,
-                        blksize: 4096,
-                    };
-                    reply.attr(&ttl, &file_attr);
-                }
-                Err(_) => {
-                    reply.error(libc::ENOENT);
-                }
-            };
+            Err(err) => Err(err.to_string()),
         }
     }
 
-    /// Read the contents of a directory.
-    ///
-    /// # Parameters
-    ///
-    /// * `_req: &Request` - The `fuser::Request` datastructure representing the request to the filesystem.
-    /// * `ino: u64` - The inode number of the requested file or directory.
-    /// * `_fh: u64` - The file handle, if given.
-    /// * `_offset: i64` - The offset of the entries.
-    /// * `reply: ReplyDirectory` - A `fuser::ReplyDirectory` instance for returning directory contents.
-    ///
-    /// # Returns
-    ///
-    /// This function does not return a value. It responds to the request with directory entries or an error code.
+    fn calculate_ino(&self, name: &str) -> u64 {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        name.hash(&mut hasher);
+        hasher.finish()
+    }
+}
+
+impl Filesystem for Fat32Fs {
     fn readdir(
         &mut self,
-        _req: &Request,
-        ino: u64,
+        _req: &Request<'_>,
+        _ino: u64,
         _fh: u64,
-        _offset: i64,
+        offset: i64,
         mut reply: ReplyDirectory,
     ) {
-		println!("Reading dir...");
-        let fs = self.fs.lock().unwrap();
-        let inode_map = self.inode_map.lock().unwrap();
-
-        // Get the path for the given inode, if it exists.
-        let path = match inode_map.get(&ino) {
-            Some(path) => path.clone(),
-            None => {
-                // Inode not found, return ENOENT.
-                reply.error(ENOENT);
-                return;
-            }
-        };
-
-        // Open dir and read entries.
-        let dir = match fs.root_dir().open_dir(path.to_str().unwrap()) {
-            Ok(dir) => dir,
-            Err(_) => {
-                reply.error(ENOENT);
-                return;
-            }
-        };
-
-        // Iterate over all entries in the directory.
-        for entry in dir.iter().flatten() {
-			println!("Entry: {:?}", entry);
-            let file_name = entry.file_name();
-            let kind = if entry.is_dir() {
-                FileType::Directory
-            } else {
-                FileType::RegularFile
-            };
-
-            // Create an inode for every file
-            let entry_path = path.join(file_name.as_str());
-            let entry_inode = self.get_or_create_inode(&entry_path);
-
-            let _ = reply.add(entry_inode, 0, kind, file_name.as_str());
+        if offset != 0 {
+            reply.ok();
+            return;
         }
 
-        reply.ok();
+        // Use `mdir` to list files in the root directory
+        let output = self.run_mtools_command(&["mdir", "::"]);
+        match output {
+            Ok(contents) => {
+                let mut entries = vec![
+                    (1, ".", FileType::Directory),  // Current directory
+                    (2, "..", FileType::Directory), // Parent directory
+                ];
+
+                // Parse the `mdir` output to extract file/directory names
+                for line in contents.lines() {
+                    if let Some(name) = line.split_whitespace().last() {
+                        let file_type = if line.contains("<DIR>") {
+                            FileType::Directory
+                        } else {
+                            FileType::RegularFile
+                        };
+                        // Add the file/directory entry to the list
+                        entries.push((entries.len() as u64 + 1, name, file_type));
+                    }
+                }
+
+                // Iterate over entries and add them to the reply
+                for (i, (ino, name, file_type)) in entries.iter().enumerate().skip(offset as usize)
+                {
+                    reply.add(
+                        *ino,           // File inode number
+                        (i as i64) + 1, // Next offset
+                        *file_type,     // File type
+                        name,           // File name
+                    );
+                }
+                reply.ok();
+            }
+            Err(err) => {
+                eprintln!("Error in readdir: {}", err);
+                reply.error(libc::EIO);
+            }
+        }
     }
 
-    /// Read data from a file (not yet implemented).
-    ///
-    /// # Parameters
-    ///
-    /// * `_req: &Request` - The `fuse::Request` datastructure representing the request to the
-    ///   filesystem.
-    /// * `ino: u64` - The inode number of the file to read.
-    /// * `_fh: u64` - File handle (not used in this implementation).
-    /// * `offset: i64` - Offset in the file where reading starts.
-    /// * `size: u32` - Number of bytes to read.
-    /// * `flags: i32`
-    /// * `lock_owner: Option<u64>`
-    /// * `reply: ReplyData` - A `fuse::ReplyData` instance for returning file data.
-    ///
-    /// # Returns
-    ///
-    /// This function does not return a value. It responds to the request with a Reply or an error
-    /// code if the requested inode does not exist.
     fn read(
         &mut self,
-        _req: &Request,
-        ino: u64,
+        _req: &Request<'_>,
+        _ino: u64,
         _fh: u64,
         offset: i64,
         size: u32,
-        flags: i32,
-        lock_owner: Option<u64>,
+        _flags: i32,
+        _lock_owner: Option<u64>,
         reply: ReplyData,
     ) {
-        todo!("File read not yet implemented!")
+        let temp_file = "/tmp/read_temp";
+
+        // Copy the file from the FAT32 image to a temporary location using `mcopy`
+        let output = self.run_mtools_command(&["mcopy", "::somefile", temp_file]);
+        if let Err(err) = output {
+            eprintln!("Error in mcopy for read: {}", err);
+            reply.error(libc::EIO);
+            return;
+        }
+
+        // Read the temporary file to extract the requested range
+        match std::fs::read(temp_file) {
+            Ok(contents) => {
+                let start = offset as usize;
+                let end = std::cmp::min(start + size as usize, contents.len());
+                reply.data(&contents[start..end]);
+            }
+            Err(err) => {
+                eprintln!("Error reading temporary file: {}", err);
+                reply.error(libc::EIO);
+            }
+        }
     }
 
-    // TODO: write, mkdir, etc.
+    fn write(
+        &mut self,
+        _req: &Request<'_>,
+        _ino: u64,
+        _fh: u64,
+        offset: i64,
+        data: &[u8],
+        _write_flags: u32,
+        _flags: i32,
+        _lock_owner: Option<u64>,
+        reply: ReplyWrite,
+    ) {
+        let temp_file = "/tmp/write_temp";
+
+        // Write data to a temporary file
+        match std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .open(temp_file)
+        {
+            Ok(mut file) => {
+                use std::io::Write;
+                if let Err(err) = file.write_all(data) {
+                    eprintln!("Error writing temporary file: {}", err);
+                    reply.error(libc::EIO);
+                    return;
+                }
+            }
+            Err(err) => {
+                eprintln!("Error creating temporary file: {}", err);
+                reply.error(libc::EIO);
+                return;
+            }
+        }
+
+        // Copy the temporary file to the FAT32 image using `mcopy`
+        let output = self.run_mtools_command(&["mcopy", temp_file, "::somefile"]);
+        if let Err(err) = output {
+            eprintln!("Error in mcopy for write: {}", err);
+            reply.error(libc::EIO);
+            return;
+        }
+
+        reply.written(data.len() as u32);
+    }
+
+    fn getattr(&mut self, _req: &Request<'_>, ino: u64, _fh: Option<u64>, reply: ReplyAttr) {
+        let ttl = Duration::new(1, 0); // 1-second attribute cache timeout
+
+        // Handle root directory
+        if ino == 1 {
+            let attr = FileAttr {
+                ino: 1,
+                size: 0,
+                blocks: 0,
+                blksize: 4096,
+                atime: SystemTime::now(),
+                mtime: SystemTime::now(),
+                ctime: SystemTime::now(),
+                crtime: SystemTime::now(),
+                kind: FileType::Directory,
+                perm: 0o755,
+                nlink: 2,
+                uid: 1000,
+                gid: 1000,
+                rdev: 0,
+                flags: 0,
+            };
+            reply.attr(&ttl, &attr);
+            return;
+        }
+
+        // Retrieve file attributes using `mdir` for the given inode
+        let output = self.run_mtools_command(&["mdir", "::"]);
+        if let Ok(contents) = output {
+            for line in contents.lines() {
+                if let Some(name) = line.split_whitespace().last() {
+                    if self.calculate_ino(name) == ino {
+                        let file_type = if line.contains("<DIR>") {
+                            FileType::Directory
+                        } else {
+                            FileType::RegularFile
+                        };
+
+                        let attr = FileAttr {
+                            ino,
+                            size: 0, // Placeholder; could be parsed from `mdir`
+                            blocks: 0,
+                            blksize: 4096,
+                            atime: SystemTime::now(),
+                            mtime: SystemTime::now(),
+                            ctime: SystemTime::now(),
+                            crtime: SystemTime::now(),
+                            kind: file_type,
+                            perm: 0o644,
+                            nlink: 1,
+                            uid: 1000,
+                            gid: 1000,
+                            rdev: 0,
+                            flags: 0,
+                        };
+                        reply.attr(&ttl, &attr);
+                        return;
+                    }
+                }
+            }
+        }
+        reply.error(libc::ENOENT); // File not found
+    }
+
+    fn mkdir(
+        &mut self,
+        _req: &Request<'_>,
+        parent: u64,
+        name: &OsStr,
+        _mode: u32,
+        _umask: u32,
+        reply: ReplyEntry,
+    ) {
+        if parent != 1 {
+            reply.error(libc::ENOENT); // Only allow creating directories in the root
+            return;
+        }
+
+        let dir_name = name.to_str().unwrap_or("");
+        let output = self.run_mtools_command(&["mmd", &format!("::{}", dir_name)]);
+        if output.is_ok() {
+            let ino = self.calculate_ino(dir_name);
+            let attr = FileAttr {
+                ino,
+                size: 0,
+                blocks: 0,
+				blksize: 4096,
+                atime: SystemTime::now(),
+                mtime: SystemTime::now(),
+                ctime: SystemTime::now(),
+                crtime: SystemTime::now(),
+                kind: FileType::Directory,
+                perm: 0o755,
+                nlink: 2,
+                uid: 1000,
+                gid: 1000,
+                rdev: 0,
+                flags: 0,
+            };
+            reply.entry(&Duration::new(1, 0), &attr, 0);
+        } else {
+            reply.error(libc::EIO); // Failed to create directory
+        }
+    }
+
+    fn create(
+        &mut self,
+        _req: &Request<'_>,
+        parent: u64,
+        name: &OsStr,
+        _mode: u32,
+		_umask: u32,
+        _flags: i32,
+        reply: ReplyCreate,
+    ) {
+        if parent != 1 {
+            reply.error(libc::ENOENT); // Only allow creating files in the root
+            return;
+        }
+
+        let file_name = name.to_str().unwrap_or("");
+        let temp_file = "/tmp/fuse_temp_create";
+
+        // Create a temporary file
+        if let Err(err) = std::fs::File::create(temp_file) {
+            eprintln!("Error creating temporary file: {}", err);
+            reply.error(libc::EIO);
+            return;
+        }
+
+        // Copy the empty file to the FAT32 filesystem
+        let output = self.run_mtools_command(&["mcopy", temp_file, &format!("::{}", file_name)]);
+        if output.is_ok() {
+            let ino = self.calculate_ino(file_name);
+            let attr = FileAttr {
+                ino,
+                size: 0,
+                blocks: 0,
+				blksize: 4096,
+                atime: SystemTime::now(),
+                mtime: SystemTime::now(),
+                ctime: SystemTime::now(),
+                crtime: SystemTime::now(),
+                kind: FileType::RegularFile,
+                perm: 0o644,
+                nlink: 1,
+                uid: 1000,
+                gid: 1000,
+                rdev: 0,
+                flags: 0,
+            };
+            reply.created(&Duration::new(1, 0), &attr, 0, 0, 0);
+        } else {
+            reply.error(libc::EIO); // Failed to create file
+        }
+    }
 }
