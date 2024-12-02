@@ -166,12 +166,12 @@ impl FuseFilesystem for FatFilesystem {
             match fs.root_dir().open_file(path.to_str().unwrap()) {
                 Ok(file) => {
                     // Beispiel für eine Datei
-                    let size = 0;
+                    let size = file.bytes().count() as u64;
                     let now = SystemTime::now();
                     let file_attr = FileAttr {
                         ino,
                         size,
-                        blocks: (size / 512) + 1,
+                        blocks: ((size + 511) / 512),
                         atime: now,
                         mtime: now,
                         ctime: now,
@@ -293,7 +293,6 @@ impl FuseFilesystem for FatFilesystem {
         let entries = vec![
             (1, fuser::FileType::Directory, "."),  // Current dir
             (1, fuser::FileType::Directory, ".."), // Parent dir
-            (2, fuser::FileType::Directory, "test_dir"), // Hardcoded test directoy
             (3, fuser::FileType::RegularFile, "test.txt"), // Hardcoded test text file
         ];
 
@@ -333,11 +332,27 @@ impl FuseFilesystem for FatFilesystem {
         _fh: u64,
         offset: i64,
         size: u32,
-        flags: i32,
-        lock_owner: Option<u64>,
+        _flags: i32,
+        _lock_owner: Option<u64>,
         reply: ReplyData,
     ) {
-        todo!("File read not yet implemented!")
+        // Get path for given inode.
+        let path = self.inode_map.lock().unwrap().get(&ino).cloned().unwrap();
+        let fs = self.fs.lock().unwrap();
+        match fs.root_dir().open_file(path.to_str().unwrap()) {
+            Ok(file) => {
+                let file_bytes = file
+                    .bytes()
+                    .skip(offset as usize)
+                    .take(size as usize)
+                    .map(|c| c.expect("Why no data?") as u8)
+                    .collect::<Vec<u8>>();
+                reply.data(&file_bytes);
+            }
+            Err(_) => {
+                reply.error(libc::ENOENT);
+            }
+        };
     }
 
     // TODO: write, mkdir, etc.
