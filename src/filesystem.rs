@@ -1,10 +1,12 @@
 //! This module implements the FUSE-API to access the FAT filesystem provided by the `fatfs` crate.
 use fatfs::{Dir, FileSystem as FatfsFileSystem, FsOptions};
 use fuser::{
-    FileAttr, FileType, Filesystem as FuseFilesystem, ReplyAttr, ReplyData, ReplyDirectory, Request,
+    FileAttr, FileType, Filesystem as FuseFilesystem, ReplyAttr, ReplyData, ReplyDirectory,
+    ReplyEntry, Request,
 };
-use libc::ENOENT;
+use libc::{EIO, ENOENT};
 use std::collections::HashMap;
+use std::ffi::OsStr;
 use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -104,6 +106,65 @@ impl FatFilesystem {
 }
 
 impl FuseFilesystem for FatFilesystem {
+    fn lookup(&mut self, _req: &Request<'_>, parent: u64, name: &OsStr, reply: ReplyEntry) {
+        println!(
+            "lookup args: req:{:?}, parent: {:?}, name:{:?}",
+            _req, parent, name
+        );
+        // Attribute time to live
+        let ttl = Duration::from_secs(1);
+
+        // Get path for given inode.
+        let mut path = {
+            let inode_map = self.inode_map.lock().unwrap();
+            inode_map.get(&parent).cloned()
+        };
+
+        let mut path = match path {
+            Some(path) => path,
+            None => {
+                reply.error(EIO);
+                return;
+            }
+        };
+
+        path.push(name);
+        println!("Parent + path = {:?}", path);
+
+        let fs = self.fs.lock().unwrap();
+
+        let ino = self.get_or_create_inode(&path);
+
+        match fs.root_dir().open_file(path.to_str().unwrap()) {
+            Ok(file) => {
+                // Beispiel für eine Datei
+                let size = file.bytes().count() as u64;
+                let now = SystemTime::now();
+                let file_attr = FileAttr {
+                    ino,
+                    size,
+                    blocks: ((size + 511) / 512),
+                    atime: now,
+                    mtime: now,
+                    ctime: now,
+                    crtime: now,
+                    kind: FileType::RegularFile,
+                    perm: 0o644,
+                    nlink: 1,
+                    uid: 501,
+                    gid: 20,
+                    rdev: 0,
+                    flags: 0,
+                    blksize: 4096,
+                };
+                reply.entry(&ttl, &file_attr, 0);
+            }
+            Err(_) => {
+                reply.error(libc::ENOENT);
+            }
+        };
+    }
+
     /// Get the attributes of a file or directory.
     ///
     /// # Parameters
