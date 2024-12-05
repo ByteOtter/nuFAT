@@ -34,8 +34,8 @@ When everything is installed, refer to the [testing guide](./docs/testing.md) on
 
 ## Supported Features
 
-- [ ] List directory entries
-- [ ] Read file contents
+- [x] List directory entries
+- [x] Read file contents
 - [ ] Create new file
 - [ ] Create new directory
 - [ ] Write content to file
