@@ -1,2 +1,3 @@
 /target
 *.img
+!docs/sample_disk.img
