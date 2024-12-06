@@ -11,7 +11,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime};
 
 /// Represent FAT-Filesystem
 ///
@@ -115,7 +115,7 @@ impl FuseFilesystem for FatFilesystem {
         let ttl = Duration::from_secs(1);
 
         // Get path for given inode.
-        let mut path = {
+        let path = {
             let inode_map = self.inode_map.lock().unwrap();
             inode_map.get(&parent).cloned()
         };
@@ -134,36 +134,33 @@ impl FuseFilesystem for FatFilesystem {
 
         let ino = self.get_or_create_inode(&path);
 
-        match fs.root_dir().open_file(path.to_str().unwrap()) {
-            Ok(file) => {
-                let size = file.bytes().count() as u64;
-                let now = SystemTime::now();
-                let file_attr = FileAttr {
-                    ino,
-                    size,
-                    blocks: ((size + 511) / 512),
-                    atime: now,
-                    mtime: now,
-                    ctime: now,
-                    crtime: now,
-                    kind: FileType::RegularFile,
-                    perm: 0o644,
-                    nlink: 1,
-                    uid: 501,
-                    gid: 20,
-                    rdev: 0,
-                    flags: 0,
-                    blksize: 4096,
-                };
-                reply.entry(&ttl, &file_attr, 0);
-                return;
-            }
-            Err(_) => {}
+        if let Ok(file) = fs.root_dir().open_file(path.to_str().unwrap()) {
+            let size = file.bytes().count() as u64;
+            let now = SystemTime::now();
+            let file_attr = FileAttr {
+                ino,
+                size,
+                blocks: ((size + 511) / 512),
+                atime: now,
+                mtime: now,
+                ctime: now,
+                crtime: now,
+                kind: FileType::RegularFile,
+                perm: 0o644,
+                nlink: 1,
+                uid: 501,
+                gid: 20,
+                rdev: 0,
+                flags: 0,
+                blksize: 4096,
+            };
+            reply.entry(&ttl, &file_attr, 0);
+            return;
         };
         // HACK: Do a check whether it is a dir or not. May require stat to be implemented.
         match fs.root_dir().open_dir(path.to_str().unwrap()) {
             Ok(dir) => {
-                let size = 1 as u64;
+                let size = 1_u64;
                 let now = SystemTime::now();
                 let file_attr = FileAttr {
                     ino,
@@ -245,36 +242,33 @@ impl FuseFilesystem for FatFilesystem {
             );
         } else {
             let fs = self.fs.lock().unwrap();
-            match fs.root_dir().open_file(path.to_str().unwrap()) {
-                Ok(file) => {
-                    let size = file.bytes().count() as u64;
-                    let now = SystemTime::now();
-                    let file_attr = FileAttr {
-                        ino,
-                        size,
-                        blocks: ((size + 511) / 512),
-                        atime: now,
-                        mtime: now,
-                        ctime: now,
-                        crtime: now,
-                        kind: FileType::RegularFile,
-                        perm: 0o644,
-                        nlink: 1,
-                        uid: 501,
-                        gid: 20,
-                        rdev: 0,
-                        flags: 0,
-                        blksize: 4096,
-                    };
-                    reply.attr(&ttl, &file_attr);
-                    return;
-                }
-                Err(_) => {}
+            if let Ok(file) = fs.root_dir().open_file(path.to_str().unwrap()) {
+                let size = file.bytes().count() as u64;
+                let now = SystemTime::now();
+                let file_attr = FileAttr {
+                    ino,
+                    size,
+                    blocks: ((size + 511) / 512),
+                    atime: now,
+                    mtime: now,
+                    ctime: now,
+                    crtime: now,
+                    kind: FileType::RegularFile,
+                    perm: 0o644,
+                    nlink: 1,
+                    uid: 501,
+                    gid: 20,
+                    rdev: 0,
+                    flags: 0,
+                    blksize: 4096,
+                };
+                reply.attr(&ttl, &file_attr);
+                return;
             };
             // HACK: Do a check whether it is a dir or not. May require stat to be implemented.
             match fs.root_dir().open_dir(path.to_str().unwrap()) {
                 Ok(dir) => {
-                    let size = 1 as u64;
+                    let size = 1_u64;
                     let now = SystemTime::now();
                     let file_attr = FileAttr {
                         ino,
@@ -307,9 +301,9 @@ impl FuseFilesystem for FatFilesystem {
         &mut self,
         _req: &Request<'_>,
         ino: u64,
-        mode: Option<u32>,
-        uid: Option<u32>,
-        gid: Option<u32>,
+        _mode: Option<u32>,
+        _uid: Option<u32>,
+        _gid: Option<u32>,
         size: Option<u64>,
         _atime: Option<fuser::TimeOrNow>,
         _mtime: Option<fuser::TimeOrNow>,
@@ -318,7 +312,7 @@ impl FuseFilesystem for FatFilesystem {
         _crtime: Option<SystemTime>,
         _chgtime: Option<SystemTime>,
         _bkuptime: Option<SystemTime>,
-        flags: Option<u32>,
+        _flags: Option<u32>,
         reply: ReplyAttr,
     ) {
         // Get path for given inode.
@@ -327,8 +321,8 @@ impl FuseFilesystem for FatFilesystem {
             let fs = self.fs.lock().unwrap();
             match fs.root_dir().open_file(path.to_str().unwrap()) {
                 Ok(mut file) => {
-                    if !size.is_none() {
-                        file.seek(SeekFrom::Start(size.unwrap())).unwrap();
+                    if let Some(size) = size {
+                        file.seek(SeekFrom::Start(size)).unwrap();
                         file.truncate().unwrap();
                     }
                 }
@@ -337,7 +331,7 @@ impl FuseFilesystem for FatFilesystem {
                     return;
                 }
             };
-            // TODO: Check if object is file.
+            // TODO: Check if object is directory.
         }
         self.getattr(_req, ino, fh, reply)
     }
@@ -379,13 +373,13 @@ impl FuseFilesystem for FatFilesystem {
                 }
             }
         };
-        let dir: Dir<'_, File>;
+
         // Open dir and read entries.
-        if path == PathBuf::from("/") {
+        let dir: Dir<'_, File> = if path == PathBuf::from("/") {
             println!("Root directory detected:");
-            dir = fs.root_dir();
+            fs.root_dir()
         } else {
-            dir = match fs.root_dir().open_dir(path.to_str().unwrap()) {
+            match fs.root_dir().open_dir(path.to_str().unwrap()) {
                 Ok(dir) => dir,
                 Err(_) => {
                     eprintln!(
@@ -395,8 +389,8 @@ impl FuseFilesystem for FatFilesystem {
                     reply.error(ENOENT);
                     return;
                 }
-            };
-        }
+            }
+        };
 
         // Iterate over all entries in the directory.
         for (index, entry) in dir.iter().skip(offset as usize).enumerate() {
@@ -466,7 +460,7 @@ impl FuseFilesystem for FatFilesystem {
                     .bytes()
                     .skip(offset as usize)
                     .take(size as usize)
-                    .map(|c| c.expect("Why no data?") as u8)
+                    .map(|c| c.expect("Why no data?"))
                     .collect::<Vec<u8>>();
                 reply.data(&file_bytes);
             }
@@ -500,12 +494,12 @@ impl FuseFilesystem for FatFilesystem {
         &mut self,
         _req: &Request<'_>,
         ino: u64,
-        fh: u64,
+        _fh: u64,
         offset: i64,
         data: &[u8],
-        write_flags: u32,
-        flags: i32,
-        lock_owner: Option<u64>,
+        _write_flags: u32,
+        _flags: i32,
+        _lock_owner: Option<u64>,
         reply: ReplyWrite,
     ) {
         // Get path for given inode.
@@ -514,7 +508,7 @@ impl FuseFilesystem for FatFilesystem {
         match fs.root_dir().open_file(path.to_str().unwrap()) {
             Ok(mut file) => {
                 file.seek(SeekFrom::Start(offset as u64)).unwrap();
-                file.write(data).unwrap();
+                file.write_all(data).unwrap();
                 reply.written(data.len() as u32)
             }
             Err(_) => reply.error(libc::ENOENT),
