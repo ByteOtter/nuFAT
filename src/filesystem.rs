@@ -2,13 +2,13 @@
 use fatfs::{Dir, FileSystem as FatfsFileSystem, FsOptions};
 use fuser::{
     FileAttr, FileType, Filesystem as FuseFilesystem, ReplyAttr, ReplyData, ReplyDirectory,
-    ReplyEntry, Request,
+    ReplyEntry, ReplyWrite, Request,
 };
 use libc::{EIO, ENOENT};
 use std::collections::HashMap;
 use std::ffi::OsStr;
-use std::fs::File;
-use std::io::Read;
+use std::fs::{File, OpenOptions};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -37,7 +37,11 @@ impl FatFilesystem {
     ///
     /// * `Self` - A new instance of a `FatFilesystem`.
     pub fn new(disk_image_path: &Path) -> Self {
-        let img_file = File::open(disk_image_path).expect("Failed to open disk image.");
+        let img_file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(disk_image_path)
+            .expect("Failed to open disk image.");
         let fs = FatfsFileSystem::new(img_file, FsOptions::new())
             .expect("Failed to create new FileSystem.");
 
@@ -107,10 +111,6 @@ impl FatFilesystem {
 
 impl FuseFilesystem for FatFilesystem {
     fn lookup(&mut self, _req: &Request<'_>, parent: u64, name: &OsStr, reply: ReplyEntry) {
-        println!(
-            "lookup args: req:{:?}, parent: {:?}, name:{:?}",
-            _req, parent, name
-        );
         // Attribute time to live
         let ttl = Duration::from_secs(1);
 
@@ -129,7 +129,6 @@ impl FuseFilesystem for FatFilesystem {
         };
 
         path.push(name);
-        println!("Parent + path = {:?}", path);
 
         let fs = self.fs.lock().unwrap();
 
@@ -164,7 +163,6 @@ impl FuseFilesystem for FatFilesystem {
         // HACK: Do a check whether it is a dir or not. May require stat to be implemented.
         match fs.root_dir().open_dir(path.to_str().unwrap()) {
             Ok(dir) => {
-                // Beispiel für eine Datei
                 let size = 1 as u64;
                 let now = SystemTime::now();
                 let file_attr = FileAttr {
@@ -206,10 +204,6 @@ impl FuseFilesystem for FatFilesystem {
     /// This function does not return a value. It responds to the request with a reply or an error
     /// code if the requested inode does not exist.
     fn getattr(&mut self, _req: &Request, ino: u64, _fh: Option<u64>, reply: ReplyAttr) {
-        println!(
-            "getattr args: req:{:?}, ino:{:?}, _fh:{:?}, reply:{:?}",
-            _req, ino, _fh, reply
-        );
         // Attribute time to live
         let ttl = Duration::from_secs(1);
 
@@ -280,7 +274,6 @@ impl FuseFilesystem for FatFilesystem {
             // HACK: Do a check whether it is a dir or not. May require stat to be implemented.
             match fs.root_dir().open_dir(path.to_str().unwrap()) {
                 Ok(dir) => {
-                    // Beispiel für eine Datei
                     let size = 1 as u64;
                     let now = SystemTime::now();
                     let file_attr = FileAttr {
@@ -309,6 +302,46 @@ impl FuseFilesystem for FatFilesystem {
         }
     }
 
+    /// Set attributes of given file or directory.
+    fn setattr(
+        &mut self,
+        _req: &Request<'_>,
+        ino: u64,
+        mode: Option<u32>,
+        uid: Option<u32>,
+        gid: Option<u32>,
+        size: Option<u64>,
+        _atime: Option<fuser::TimeOrNow>,
+        _mtime: Option<fuser::TimeOrNow>,
+        _ctime: Option<SystemTime>,
+        fh: Option<u64>,
+        _crtime: Option<SystemTime>,
+        _chgtime: Option<SystemTime>,
+        _bkuptime: Option<SystemTime>,
+        flags: Option<u32>,
+        reply: ReplyAttr,
+    ) {
+        // Get path for given inode.
+        let path = self.inode_map.lock().unwrap().get(&ino).cloned().unwrap();
+        {
+            let fs = self.fs.lock().unwrap();
+            match fs.root_dir().open_file(path.to_str().unwrap()) {
+                Ok(mut file) => {
+                    if !size.is_none() {
+                        file.seek(SeekFrom::Start(size.unwrap())).unwrap();
+                        file.truncate().unwrap();
+                    }
+                }
+                Err(_) => {
+                    reply.error(libc::ENOENT);
+                    return;
+                }
+            };
+            // TODO: Check if object is file.
+        }
+        self.getattr(_req, ino, fh, reply)
+    }
+
     /// Read the contents of a directory.
     ///
     /// # Parameters
@@ -330,11 +363,6 @@ impl FuseFilesystem for FatFilesystem {
         offset: i64,
         mut reply: ReplyDirectory,
     ) {
-        println!("Reading dir...");
-        println!(
-            "Readdir args: _req:{:?}, ino:{:?}, _fh:{:?}, _offset:{:?}, reply:{:?}",
-            _req, ino, _fh, offset, reply
-        );
         let fs = self.fs.lock().unwrap();
 
         let path = {
@@ -448,5 +476,50 @@ impl FuseFilesystem for FatFilesystem {
         };
     }
 
-    // TODO: write, mkdir, etc.
+    /// Write data to file.
+    ///
+    /// # Parameters
+    ///
+    /// * `_req: &Request<'_>` - The `fuser::Request` datastructure representing the request to the
+    ///   filesystem.
+    /// * `ino: u64` - The inode number of the file to read.
+    /// * `fh: u64` - The file handle.
+    /// * `offset: i64`
+    /// * `data: &[u8]` - The data to write as bytes.
+    /// * `write_flags: u32` - Specific flags to set while writing. (not used in this
+    ///   implementation)
+    /// * `flags: i32` - Additional flags. (not used in this implementation)
+    /// * `lock_owner: Option<u64>`
+    /// * `reply: ReplyWrite` - A `fuser::ReplyWrite` instance.
+    ///
+    /// # Returns
+    ///
+    /// This function does not return a value. It responds to the request with a Reply or an error
+    /// code if the requested inode cannot be written to.
+    fn write(
+        &mut self,
+        _req: &Request<'_>,
+        ino: u64,
+        fh: u64,
+        offset: i64,
+        data: &[u8],
+        write_flags: u32,
+        flags: i32,
+        lock_owner: Option<u64>,
+        reply: ReplyWrite,
+    ) {
+        // Get path for given inode.
+        let path = self.inode_map.lock().unwrap().get(&ino).cloned().unwrap();
+        let fs = self.fs.lock().unwrap();
+        match fs.root_dir().open_file(path.to_str().unwrap()) {
+            Ok(mut file) => {
+                file.seek(SeekFrom::Start(offset as u64)).unwrap();
+                file.write(data).unwrap();
+                reply.written(data.len() as u32)
+            }
+            Err(_) => reply.error(libc::ENOENT),
+        };
+    }
+
+    // TODO: mkdir, etc.
 }
