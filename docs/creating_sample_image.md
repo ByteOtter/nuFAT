@@ -21,3 +21,7 @@ sudo mkfs.vfat disk.img
 ```
 
 This should format your raw image into the FAT file format.
+
+> [!Note]
+> If you have trouble generating your own `.img` file, you can also try and use the sample image included
+> here.
