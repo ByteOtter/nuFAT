@@ -400,7 +400,7 @@ impl FuseFilesystem for FatFilesystem {
         reply.ok();
     }
 
-    /// Read data from a file (not yet implemented).
+    /// Read data from a file.
     ///
     /// # Parameters
     ///
@@ -410,8 +410,8 @@ impl FuseFilesystem for FatFilesystem {
     /// * `_fh: u64` - File handle (not used in this implementation).
     /// * `offset: i64` - Offset in the file where reading starts.
     /// * `size: u32` - Number of bytes to read.
-    /// * `flags: i32`
-    /// * `lock_owner: Option<u64>`
+    /// * `_flags: i32` - Additional flags. (Not used in this implementation)
+    /// * `_lock_owner: Option<u64>` - (Not used in this implementation)
     /// * `reply: ReplyData` - A `fuse::ReplyData` instance for returning file data.
     ///
     /// # Returns
