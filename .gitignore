@@ -1,3 +1,4 @@
 /target
 *.img
+*.patch
 !docs/sample_disk.img

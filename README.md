@@ -3,7 +3,7 @@
 nuFAT is an experimental filesystem driver to use the FAT32 filesystem in the Linux userspace.
 
 > [!Warning]
-> nuFAT is currently in its earliest stages of development and therefor not ready for any real world use.
+> nuFAT is currently in its earliest stages of development and therefore not ready for any real world use.
 > Please refer to the `Supported Features` section for the currently supported filesystem operations.
 
 ## Set up
