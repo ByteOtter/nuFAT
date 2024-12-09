@@ -38,7 +38,7 @@ When everything is installed, refer to the [testing guide](./docs/testing.md) on
 - [x] Read file contents
 - [ ] Create new file
 - [ ] Create new directory
-- [ ] Write content to file
+- [x] Write content to file
 - [ ] Delete file or directory
 
 ## Reporting issues
