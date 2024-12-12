@@ -83,30 +83,6 @@ impl FatFilesystem {
             ino
         }
     }
-
-    /// Helper function to format the filesize correctly.
-    ///
-    /// # Parameters
-    ///
-    /// * `size: u64` - The size of the file.
-    ///
-    /// # Returns
-    ///
-    /// A format string including the size calculated into the correct unit.
-    fn format_file_size(size: u64) -> String {
-        const KB: u64 = 1024;
-        const MB: u64 = 1024 * KB;
-        const GB: u64 = 1024 * MB;
-        if size < KB {
-            format!("{}B", size)
-        } else if size < MB {
-            format!("{}KB", size / KB)
-        } else if size < GB {
-            format!("{}MB", size / MB)
-        } else {
-            format!("{}GB", size / GB)
-        }
-    }
 }
 
 impl FuseFilesystem for FatFilesystem {
